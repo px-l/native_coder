@@ -2,8 +2,10 @@ import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Project, Task, Stage } from "../server/model";
 import "./style.css";
+import { PrototypePanel } from "./PrototypePanel";
 const stages: { id: Stage; label: string; hint: string }[] = [
   { id: "requirements", label: "需求澄清", hint: "明确目标与验收标准" },
+  { id: "prototype", label: "原型设计", hint: "预览并确认新的界面" },
   { id: "plan", label: "技术方案", hint: "确定实现与改动范围" },
   { id: "develop", label: "开发", hint: "在独立副本中生成代码" },
   { id: "verify", label: "本地验证", hint: "执行项目质量检查" },
@@ -32,13 +34,19 @@ function App() {
   const [view, setView] = useState<"work" | "projects">("work");
   const [newTask, setNewTask] = useState(false);
   const [addProject, setAddProject] = useState(false);
+  const [projectKind, setProjectKind] = useState<"existing" | "new">(
+    "existing",
+  );
+  const [bindingProject, setBindingProject] = useState<Project | null>(null);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [health, setHealth] = useState("正在检查 Codex…");
   const [draft, setDraft] = useState("");
   const [dirty, setDirty] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
-  const [tab, setTab] = useState<"document" | "diff" | "events">("document");
+  const [tab, setTab] = useState<"document" | "prototype" | "diff" | "events">(
+    "document",
+  );
   const [diff, setDiff] = useState({
     diff: "",
     files: "",
@@ -67,6 +75,10 @@ function App() {
     const timer = setInterval(() => refresh().catch(() => {}), 2000);
     return () => clearInterval(timer);
   }, []);
+  const taskStages =
+    task?.prototypeRequired === false
+      ? stages.filter((s) => s.id !== "prototype")
+      : stages;
   const stage = task?.stage;
   const savedDocument = task
     ? stage === "requirements"
@@ -93,15 +105,17 @@ function App() {
     };
   }, [tab, selected, task?.busy, task?.stage]);
   async function act(action: string, data: unknown = {}) {
-    if (!task) return;
+    if (!task) return false;
     setPending(true);
     setError("");
     try {
       await api(`tasks/${task.id}/${action}`, data);
       await refresh();
       if (action === "document") setDirty(false);
+      return true;
     } catch (e) {
       setError(String(e));
+      return false;
     } finally {
       setPending(false);
     }
@@ -149,7 +163,13 @@ function App() {
             <span className="repo-icon">⌘</span>
             <span>
               {p.name}
-              <small>{p.readOnly ? "只读参考" : "允许生成代码"}</small>
+              <small>
+                {!p.path
+                  ? "全新项目 · 未绑定仓库"
+                  : p.readOnly
+                    ? "只读参考"
+                    : "允许生成代码"}
+              </small>
             </span>
           </button>
         ))}
@@ -220,12 +240,27 @@ function App() {
                   <div className="card-top">
                     <Icon name="repo" />
                     <span className={`badge ${p.readOnly ? "" : "blue"}`}>
-                      {p.readOnly ? "只读参考" : "可开发"}
+                      {p.kind === "new" ? "全新项目" : "已有项目"} ·{" "}
+                      {!p.path ? "待绑定" : p.readOnly ? "只读参考" : "可开发"}
                     </span>
                   </div>
                   <h2>{p.name}</h2>
-                  <p className="path">{p.path}</p>
+                  <p className="path">
+                    {p.path || "无需仓库即可开始需求澄清和原型设计"}
+                  </p>
                   <div className="repo-address">{p.remote || "未配置远端"}</div>
+                  {!p.path && (
+                    <button
+                      className="secondary"
+                      onClick={() => {
+                        setBindingProject(p);
+                        setProjectKind("existing");
+                        setAddProject(true);
+                      }}
+                    >
+                      绑定开发仓库
+                    </button>
+                  )}
                   <div className="check-tags">
                     {p.checks.map((c) => (
                       <span key={c.name}>{c.name}</span>
@@ -246,7 +281,7 @@ function App() {
               {!projects.length && (
                 <Empty
                   title="还没有接入项目"
-                  detail="选择本机已有的 Git 仓库；默认以只读方式接入。"
+                  detail="接入已有仓库，或创建无需仓库的全新项目。"
                 />
               )}
             </div>
@@ -408,11 +443,11 @@ function App() {
                         </div>
                       </div>
                       <ol className="stepper">
-                        {stages.map((s, i) => {
+                        {taskStages.map((s, i) => {
                           const current =
                             task.stage === "done"
-                              ? 5
-                              : stages.findIndex(
+                              ? taskStages.length
+                              : taskStages.findIndex(
                                   (row) => row.id === task.stage,
                                 );
                           return (
@@ -439,7 +474,9 @@ function App() {
                       )}
                       {readOnly && (
                         <div className="alert info">
-                          此项目仅供需求分析和方案参考，代码生成与提交已禁用。
+                          {!project?.path
+                            ? "此全新项目可先澄清需求、设计原型和方案；开发前请在项目仓库页绑定 Git 仓库。"
+                            : "此项目可进行需求、原型和方案设计，业务代码生成与提交已禁用。"}
                         </div>
                       )}
                       <div
@@ -453,6 +490,13 @@ function App() {
                           onClick={() => setTab("document")}
                         >
                           工作内容
+                        </button>
+                        <button
+                          role="tab"
+                          aria-selected={tab === "prototype"}
+                          onClick={() => setTab("prototype")}
+                        >
+                          原型图
                         </button>
                         <button
                           role="tab"
@@ -470,7 +514,16 @@ function App() {
                         </button>
                       </div>
                       <div className="tab-body">
-                        {tab === "events" ? (
+                        {tab === "prototype" ||
+                        (tab === "document" && task.stage === "prototype") ? (
+                          <PrototypePanel
+                            key={task.id}
+                            task={task}
+                            project={project}
+                            pending={pending}
+                            act={act}
+                          />
+                        ) : tab === "events" ? (
                           <div className="timeline">
                             {[...task.events].reverse().map((event, i) => (
                               <article key={i}>
@@ -812,7 +865,13 @@ function App() {
         </Modal>
       )}
       {addProject && (
-        <Modal title="接入本地 Git 仓库" onClose={() => setAddProject(false)}>
+        <Modal
+          title={bindingProject ? "绑定开发仓库" : "添加项目"}
+          onClose={() => {
+            setAddProject(false);
+            setBindingProject(null);
+          }}
+        >
           {error && (
             <div className="alert error" role="alert">
               {error}
@@ -826,14 +885,21 @@ function App() {
               setError("");
               try {
                 const checks = String(data.get("checks") || "").trim();
-                await api("projects", {
-                  name: data.get("name"),
-                  path: data.get("path"),
-                  readOnly: data.get("writable") !== "on",
-                  ...(checks ? { checks: JSON.parse(checks) } : {}),
-                });
+                await api(
+                  bindingProject
+                    ? `projects/${bindingProject.id}/bind`
+                    : "projects",
+                  {
+                    kind: projectKind,
+                    name: data.get("name"),
+                    path: data.get("path"),
+                    readOnly: data.get("writable") !== "on",
+                    ...(checks ? { checks: JSON.parse(checks) } : {}),
+                  },
+                );
                 await refresh();
                 setAddProject(false);
+                setBindingProject(null);
               } catch (e) {
                 setError(String(e));
               } finally {
@@ -841,44 +907,80 @@ function App() {
               }
             }}
           >
+            {!bindingProject && (
+              <label className="field">
+                项目类型
+                <select
+                  value={projectKind}
+                  onChange={(e) =>
+                    setProjectKind(e.target.value as "new" | "existing")
+                  }
+                >
+                  <option value="existing">已有项目：参考原界面设计</option>
+                  <option value="new">全新项目：从零设计，无需仓库</option>
+                </select>
+              </label>
+            )}
             <label className="field">
               项目名称
-              <input name="name" placeholder="项目简称（可选）" />
-            </label>
-            <label className="field">
-              仓库绝对路径
               <input
-                name="path"
-                placeholder="/Users/you/projects/my-app"
-                required
+                name="name"
+                defaultValue={bindingProject?.name || ""}
+                required={projectKind === "new"}
+                placeholder={
+                  projectKind === "new"
+                    ? "例如：团队需求管理平台"
+                    : "项目简称（可选）"
+                }
               />
             </label>
-            <label className="checkbox">
-              <input type="checkbox" name="writable" />
-              允许在独立副本中生成代码与提交
-            </label>
-            <p className="muted">
-              不勾选则只允许需求与方案分析。原始工作目录始终不会被修改。
-            </p>
-            <details>
-              <summary>自定义检查命令（可选）</summary>
+            {projectKind === "new" ? (
               <p className="muted">
-                默认识别 package.json 的
-                lint、typecheck、test、build。其他项目可填写命令数组。
+                先澄清需求并生成新原型，开发前再绑定已初始化且有首个提交的 Git
+                仓库。
               </p>
-              <label className="field">
-                检查配置 JSON
-                <textarea
-                  name="checks"
-                  rows={4}
-                  placeholder={
-                    '[{"name":"test","argv":["python3","-m","pytest"]}]'
-                  }
-                />
-              </label>
-            </details>
+            ) : (
+              <>
+                <label className="field">
+                  仓库绝对路径
+                  <input
+                    name="path"
+                    placeholder="/Users/you/projects/my-app"
+                    required
+                  />
+                </label>
+                <label className="checkbox">
+                  <input type="checkbox" name="writable" />
+                  允许在独立副本中生成代码与提交
+                </label>
+                <p className="muted">
+                  不勾选则只允许需求、原型与方案设计。原始工作目录始终不会被修改。
+                </p>
+                <details>
+                  <summary>自定义检查命令（可选）</summary>
+                  <p className="muted">
+                    默认识别 package.json 的
+                    lint、typecheck、test、build。其他项目可填写命令数组。
+                  </p>
+                  <label className="field">
+                    检查配置 JSON
+                    <textarea
+                      name="checks"
+                      rows={4}
+                      placeholder={
+                        '[{"name":"test","argv":["python3","-m","pytest"]}]'
+                      }
+                    />
+                  </label>
+                </details>
+              </>
+            )}
             <button className="primary full" disabled={pending}>
-              接入项目
+              {bindingProject
+                ? "绑定仓库"
+                : projectKind === "new"
+                  ? "创建全新项目"
+                  : "接入已有项目"}
             </button>
           </form>
         </Modal>

@@ -1209,3 +1209,41 @@ dialog::backdrop {
     padding: 22px;
   }
 }
+.prototype-panel h3 {
+  line-height: 1.9;
+}
+.prototype-canvas {
+  margin: 18px 0;
+  background: #eef1f6;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: auto;
+  max-height: 720px;
+}
+.prototype-canvas img {
+  display: block;
+  width: 100%;
+  min-width: 480px;
+  height: auto;
+}
+.prototype-summary {
+  white-space: pre-wrap;
+  font-size: 14px;
+  color: #64718a;
+  margin: 15px 0;
+}
+.reference-preview {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.reference-preview img {
+  max-width: 210px;
+  max-height: 130px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.stepper {
+  flex-wrap: wrap;
+  row-gap: 12px;
+}

@@ -31,7 +31,7 @@ export function createApp(service: Service, webRoot: string) {
     let content = "";
     for await (const part of request) {
       content += part;
-      if (Buffer.byteLength(content) > 100000) throw new Error("请求过大");
+      if (Buffer.byteLength(content) > 6000000) throw new Error("请求过大");
     }
     const result: unknown = JSON.parse(content || "{}");
     if (!result || Array.isArray(result) || typeof result !== "object")
@@ -101,18 +101,29 @@ export function createApp(service: Service, webRoot: string) {
           );
         if (path === "/api/tasks" && request.method === "POST")
           return json(response, service.createTask(await body(request)), 201);
+        const binding = path.match(/^\/api\/projects\/([\w-]+)\/bind$/);
+        if (binding && request.method === "POST")
+          return json(
+            response,
+            await service.addProject(await body(request), binding[1]),
+          );
         const match = path.match(
-          /^\/api\/tasks\/([\w-]+)\/(document|approve|generate|develop|verify|commit|push|diff|install)$/,
+          /^\/api\/tasks\/([\w-]+)\/(prototype-input|prototype|document|approve|generate|develop|verify|commit|push|diff|install)$/,
         );
         if (match) {
           if (match[2] === "diff" && request.method === "GET")
             return json(response, await service.diff(match[1]));
           if (request.method === "POST") {
             const input = await body(request);
+            if (match[2] === "prototype-input")
+              return json(
+                response,
+                service.savePrototypeInput(match[1], input),
+              );
             if (match[2] === "document")
               return json(response, service.saveDocument(match[1], input));
             if (match[2] === "approve")
-              return json(response, service.approve(match[1]));
+              return json(response, service.approve(match[1], input));
             return json(
               response,
               service.start(match[1], match[2], input).task,

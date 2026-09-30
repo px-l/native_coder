@@ -9,6 +9,37 @@ import { Service } from "../server/service.js";
 import { run, type Runner } from "../server/process.js";
 import { createApp } from "../server/http.js";
 import type { AddressInfo } from "node:net";
+import { renderDrawing, type Drawing } from "../server/prototype.js";
+
+const drawing: Drawing = {
+  title: "需求工作台",
+  summary: "左侧导航，右侧需求列表与新建按钮。",
+  width: 1440,
+  height: 900,
+  background: "#f5f7fb",
+  elements: [
+    {
+      kind: "rect",
+      x: 0,
+      y: 0,
+      width: 240,
+      height: 900,
+      text: "",
+      fill: "#ffffff",
+      fontSize: 16,
+    },
+    {
+      kind: "text",
+      x: 280,
+      y: 50,
+      width: 0,
+      height: 0,
+      text: "需求列表",
+      fill: "#202938",
+      fontSize: 28,
+    },
+  ],
+};
 
 async function fixture(readOnly = false) {
   const root = await mkdtemp(join(tmpdir(), "native-coder-test-"));
@@ -25,14 +56,18 @@ async function fixture(readOnly = false) {
   await run(["git", "init", "--bare", remote], root);
   await run(["git", "remote", "add", "origin", remote], repo);
   const store = new Store(join(root, "state"));
+  const prompts: string[] = [];
   const runner: Runner = async (argv, cwd, options) => {
     if (argv[0] === "fake-codex") {
+      prompts.push(options?.input || "");
       if (argv.includes("workspace-write"))
         await writeFile(join(cwd, "hello.txt"), "generated\n");
       const out = argv[argv.indexOf("--output-last-message") + 1];
       await writeFile(
         out,
-        "目标：改进文本\n验收：内容更新\n方案：修改 hello.txt",
+        argv.includes("--output-schema")
+          ? JSON.stringify(drawing)
+          : "目标：改进文本\n验收：内容更新\n方案：修改 hello.txt",
       );
       return "completed";
     }
@@ -66,6 +101,8 @@ async function fixture(readOnly = false) {
   async function ready() {
     await action("generate");
     service.approve(task.id);
+    const prototype = await action("prototype");
+    service.approve(task.id, { versionId: prototype.prototypes[0].id });
     await action("generate");
     service.approve(task.id);
     const current = store.task(task.id);
@@ -83,6 +120,7 @@ async function fixture(readOnly = false) {
     await rm(root, { recursive: true, force: true });
   }
   return {
+    prompts,
     root,
     repo,
     remote,
@@ -96,7 +134,7 @@ async function fixture(readOnly = false) {
   };
 }
 
-test("five stages produce a real commit and push a task branch without modifying the source", async () => {
+test("six stages produce a real commit and push a task branch without modifying the source", async () => {
   const f = await fixture();
   try {
     assert.throws(() => f.service.start(f.task.id, "develop"), /方案/);
@@ -336,4 +374,191 @@ test("long-running processes time out and fail instead of reporting success", as
     }),
     /超时/,
   );
+});
+
+test("prototype gate follows requirements and passes the approved drawing to the plan", async () => {
+  const f = await fixture(true);
+  try {
+    assert.throws(() => f.service.start(f.task.id, "prototype"), /确认需求/);
+    await f.action("generate");
+    assert.equal(f.service.approve(f.task.id).stage, "prototype");
+    assert.throws(() => f.service.start(f.task.id, "generate"), /无法生成文档/);
+    assert.throws(() => f.service.approve(f.task.id), /先生成/);
+    const result = await f.action("prototype");
+    assert.equal(result.prototypes.length, 1);
+    assert.match(result.prototypes[0].svg, /<svg/);
+    assert.match(f.prompts.at(-1)!, /已有项目/);
+    assert.match(f.prompts.at(-1)!, /目标：改进文本/);
+    assert.equal(
+      f.service.approve(f.task.id, { versionId: result.prototypes[0].id })
+        .stage,
+      "plan",
+    );
+    await f.action("generate");
+    assert.match(f.prompts.at(-1)!, /已确认原型 v1/);
+    assert.match(f.prompts.at(-1)!, /需求列表/);
+    assert.equal(await run(["git", "status", "--porcelain"], f.repo), "");
+    assert.throws(
+      () => f.service.savePrototypeInput(f.task.id, { brief: "late" }),
+      /仅原型/,
+    );
+  } finally {
+    await f.close();
+  }
+});
+test("changed design input invalidates old versions and a failed generation preserves history", async () => {
+  const f = await fixture();
+  try {
+    f.service.saveDocument(f.task.id, { content: "confirmed requirement" });
+    f.service.approve(f.task.id);
+    const first = await f.action("prototype");
+    f.service.savePrototypeInput(f.task.id, { brief: "顶部添加筛选按钮" });
+    assert.throws(
+      () => f.service.approve(f.task.id, { versionId: first.prototypes[0].id }),
+      /当前设计输入/,
+    );
+    const original = f.service.runner;
+    f.service.runner = async (argv, cwd, options) => {
+      if (argv[0] === "fake-codex") throw new Error("model unavailable");
+      return original(argv, cwd, options);
+    };
+    const failed = await f.action("prototype");
+    assert.equal(failed.prototypes.length, 1);
+    assert.equal(failed.stage, "prototype");
+    assert.match(failed.error, /unavailable/);
+    f.service.runner = original;
+    const second = await f.action("prototype");
+    assert.equal(second.prototypes[1].version, 2);
+    assert.equal(
+      f.service.approve(f.task.id, { versionId: second.prototypes[1].id })
+        .stage,
+      "plan",
+    );
+  } finally {
+    await f.close();
+  }
+});
+test("new projects can clarify and prototype without a repository, then bind before development", async () => {
+  const f = await fixture();
+  try {
+    const p = await f.service.addProject({ kind: "new", name: "全新产品" });
+    const task = f.service.createTask({
+      projectId: p.id,
+      title: "新产品",
+      request: "需求列表",
+    });
+    await f.service.start(task.id, "generate").completion;
+    f.service.approve(task.id);
+    await f.service.start(task.id, "prototype").completion;
+    const result = f.store.task(task.id);
+    assert.equal(result.workspace, "");
+    assert.equal(result.prototypes.length, 1);
+    assert.match(f.prompts.at(-1)!, /全新项目/);
+    f.service.approve(task.id, { versionId: result.prototypes[0].id });
+    await f.service.start(task.id, "generate").completion;
+    f.service.approve(task.id);
+    assert.throws(() => f.service.start(task.id, "develop"), /绑定业务/);
+    // A separate initialized repository stands in for the new product repository.
+    const repo = join(f.root, "new-product");
+    await run(["git", "clone", f.repo, repo], f.root);
+    const bound = await f.service.addProject(
+      { path: repo, readOnly: false, checks: f.project.checks },
+      p.id,
+    );
+    assert.equal(bound.kind, "new");
+    assert.equal(bound.readOnly, false);
+    assert.equal(f.store.task(task.id).stage, "plan");
+    assert.equal(f.store.task(task.id).plan, "");
+    await f.service.start(task.id, "generate").completion;
+    f.service.approve(task.id);
+    await f.service.start(task.id, "develop").completion;
+    assert.equal(f.store.task(task.id).stage, "verify");
+    await assert.rejects(
+      f.service.addProject({ path: repo }, p.id),
+      /只有未绑定/,
+    );
+  } finally {
+    await f.close();
+  }
+});
+test("old tasks preserve progress while old requirements tasks adopt the prototype gate", async () => {
+  const f = await fixture();
+  try {
+    const legacy = { ...f.task } as unknown as Record<string, unknown>;
+    for (const key of [
+      "prototypeRequired",
+      "prototypeBrief",
+      "prototypeRevision",
+      "referenceImage",
+      "prototypes",
+      "approvedPrototypeId",
+    ])
+      delete legacy[key];
+    legacy.stage = "plan";
+    f.store.db
+      .prepare("UPDATE records SET body=? WHERE kind=? AND id=?")
+      .run(JSON.stringify(legacy), "task", f.task.id);
+    assert.equal(f.store.task(f.task.id).prototypeRequired, false);
+    assert.deepEqual(f.store.task(f.task.id).prototypes, []);
+    legacy.stage = "requirements";
+    legacy.requirements = "ready";
+    f.store.db
+      .prepare("UPDATE records SET body=? WHERE kind=? AND id=?")
+      .run(JSON.stringify(legacy), "task", f.task.id);
+    assert.equal(f.service.approve(f.task.id).stage, "prototype");
+  } finally {
+    await f.close();
+  }
+});
+test("drawing output escapes text and rejects unsafe colors and invalid coordinates", () => {
+  const text = {
+    ...drawing,
+    elements: [{ ...drawing.elements[1], text: "<script>alert(1)</script>" }],
+  };
+  assert.ok(!renderDrawing(text).svg.includes("<script>"));
+  assert.match(renderDrawing(text).svg, /&lt;script&gt;/);
+  assert.throws(
+    () => renderDrawing({ ...drawing, background: "url(https://example.com)" }),
+    /不符合/,
+  );
+  assert.throws(
+    () =>
+      renderDrawing({
+        ...drawing,
+        elements: [{ ...drawing.elements[0], width: 2000 }],
+      }),
+    /超出画布/,
+  );
+});
+test("reference image validation and prototype busy locking are enforced", async () => {
+  const f = await fixture();
+  try {
+    f.service.saveDocument(f.task.id, { content: "ready" });
+    f.service.approve(f.task.id);
+    assert.throws(
+      () =>
+        f.service.savePrototypeInput(f.task.id, {
+          referenceImage: "data:image/svg+xml;base64,PHN2Zz4=",
+        }),
+      /PNG/,
+    );
+    assert.throws(
+      () =>
+        f.service.savePrototypeInput(f.task.id, {
+          referenceImage: "data:image/png;base64,YWJj",
+        }),
+      /内容无效/,
+    );
+    const operation = f.service.start(f.task.id, "prototype");
+    assert.throws(
+      () => f.service.savePrototypeInput(f.task.id, { brief: "race" }),
+      /正在执行/,
+    );
+    await operation.completion;
+    const second = new Store(f.store.directory);
+    assert.equal(second.task(f.task.id).prototypes.length, 1);
+    second.close();
+  } finally {
+    await f.close();
+  }
 });

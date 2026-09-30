@@ -27,10 +27,22 @@ export class Store {
     ).map((row) => JSON.parse(row.body) as T);
   }
   projects() {
-    return this.list<Project>("project");
+    return this.list<Project>("project").map((project) => ({
+      ...project,
+      kind: project.kind || "existing",
+    }));
   }
   tasks() {
-    return this.list<Task>("task");
+    return this.list<Task>("task").map((task) => ({
+      ...task,
+      prototypeBrief: task.prototypeBrief ?? "",
+      prototypeRevision: task.prototypeRevision ?? 0,
+      referenceImage: task.referenceImage ?? "",
+      prototypes: task.prototypes ?? [],
+      approvedPrototypeId: task.approvedPrototypeId ?? "",
+      prototypeRequired:
+        task.prototypeRequired ?? task.stage === "requirements",
+    }));
   }
   project(id: string) {
     const item = this.projects().find((p) => p.id === id);
