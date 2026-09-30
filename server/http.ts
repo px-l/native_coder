@@ -108,13 +108,19 @@ export function createApp(service: Service, webRoot: string) {
             await service.addProject(await body(request), binding[1]),
           );
         const match = path.match(
-          /^\/api\/tasks\/([\w-]+)\/(prototype-input|prototype|document|approve|generate|develop|verify|commit|push|diff|install)$/,
+          /^\/api\/tasks\/([\w-]+)\/(visual-input|visual-report|prototype-input|prototype|document|approve|generate|develop|verify|commit|push|diff|install)$/,
         );
         if (match) {
+          if (match[2] === "visual-report" && request.method === "GET")
+            return json(response, {
+              html: await service.visualReport(match[1]),
+            });
           if (match[2] === "diff" && request.method === "GET")
             return json(response, await service.diff(match[1]));
           if (request.method === "POST") {
             const input = await body(request);
+            if (match[2] === "visual-input")
+              return json(response, service.saveVisualInput(match[1], input));
             if (match[2] === "prototype-input")
               return json(
                 response,

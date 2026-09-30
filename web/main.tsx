@@ -2,13 +2,14 @@ import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Project, Task, Stage } from "../server/model";
 import "./style.css";
+import { VisualPanel } from "./VisualPanel";
 import { PrototypePanel } from "./PrototypePanel";
 const stages: { id: Stage; label: string; hint: string }[] = [
   { id: "requirements", label: "需求澄清", hint: "明确目标与验收标准" },
   { id: "prototype", label: "原型设计", hint: "预览并确认新的界面" },
   { id: "plan", label: "技术方案", hint: "确定实现与改动范围" },
   { id: "develop", label: "开发", hint: "在独立副本中生成代码" },
-  { id: "verify", label: "本地验证", hint: "执行项目质量检查" },
+  { id: "verify", label: "本地验证", hint: "代码检查与原型视觉验收" },
   { id: "commit", label: "代码提交", hint: "审查差异并推送分支" },
 ];
 let token = "";
@@ -40,6 +41,7 @@ function App() {
   const [bindingProject, setBindingProject] = useState<Project | null>(null);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  const [visualDirty, setVisualDirty] = useState(false);
   const [health, setHealth] = useState("正在检查 Codex…");
   const [draft, setDraft] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -633,7 +635,7 @@ function App() {
                                     {task.stage === "develop"
                                       ? "Codex 在独立工作副本中执行已确认的方案。源目录保持不变。"
                                       : task.stage === "verify"
-                                        ? "运行接入时配置的检查。失败后可让 Codex 根据结果继续修复。"
+                                        ? "运行代码检查和 UIProof 页面验收。全部通过后才能提交。"
                                         : task.stage === "commit"
                                           ? "查看代码差异，填写提交说明。提交后可单独推送任务分支。"
                                           : "提交记录保存在当前任务，可查看完整改动与执行过程。"}
@@ -643,6 +645,34 @@ function App() {
                                       工作副本：{task.workspace}
                                     </p>
                                   )}
+                                  <VisualPanel
+                                    task={task}
+                                    onDirtyChange={setVisualDirty}
+                                    disabled={!!disabled || !!readOnly}
+                                    act={act}
+                                    download={async () => {
+                                      try {
+                                        const result = await api<{
+                                          html: string;
+                                        }>(`tasks/${task.id}/visual-report`);
+                                        const url = URL.createObjectURL(
+                                          new Blob([result.html], {
+                                            type: "text/html",
+                                          }),
+                                        );
+                                        const a = document.createElement("a");
+                                        a.href = url;
+                                        a.download = `uiproof-${task.visual?.runId}.html`;
+                                        a.click();
+                                        setTimeout(
+                                          () => URL.revokeObjectURL(url),
+                                          1000,
+                                        );
+                                      } catch (e) {
+                                        setError(String(e));
+                                      }
+                                    }}
+                                  />
                                   <div className="checks">
                                     {project?.checks.map((check) => {
                                       const result = task.checks.find(
@@ -729,7 +759,9 @@ function App() {
                                     ) && (
                                       <button
                                         className="secondary"
-                                        disabled={disabled || readOnly}
+                                        disabled={
+                                          disabled || readOnly || visualDirty
+                                        }
                                         onClick={() => act("verify")}
                                       >
                                         运行本地验证
@@ -741,6 +773,7 @@ function App() {
                                         disabled={
                                           disabled ||
                                           readOnly ||
+                                          visualDirty ||
                                           !commitMessage.trim()
                                         }
                                         onClick={() =>

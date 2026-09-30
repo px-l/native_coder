@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { drawingSchema, renderDrawing } from "./prototype.js";
+import { previewUrl, verifyUIProof, type VisualVerifier } from "./uiproof.js";
 import { Store } from "./store.js";
 import { run, type Runner } from "./process.js";
 import type { Check, Project, Task } from "./model.js";
@@ -17,6 +18,7 @@ export class Service {
     public runner: Runner = run,
     public codexBin = process.env.CODEX_BIN || "codex",
     public protectedPaths: string[] = [],
+    public visualVerifier: VisualVerifier = verifyUIProof,
   ) {}
   git(path: string, ...args: string[]) {
     return this.runner(["git", ...args], path);
@@ -156,6 +158,9 @@ export class Service {
   createTask(input: Record<string, unknown>) {
     const project = this.store.project(text(input.projectId, "项目"));
     const task: Task = {
+      visualRequired: true,
+      visualUrl: "",
+      visualReadySelector: "",
       prototypeRequired: true,
       prototypeBrief: "",
       prototypeRevision: 0,
@@ -196,6 +201,59 @@ export class Service {
     const task = this.store.task(id);
     if (task.busy) throw new Error("任务正在执行，请等待完成");
     return task;
+  }
+  saveVisualInput(id: string, input: Record<string, unknown>) {
+    const task = this.idle(id);
+    if (!["develop", "verify", "commit"].includes(task.stage))
+      throw new Error("请在开发或本地验证阶段配置页面验收");
+    const url = previewUrl(input.url).href;
+    const selector =
+      typeof input.readySelector === "string" ? input.readySelector.trim() : "";
+    if (selector.length > 500) throw new Error("就绪元素选择器过长");
+    if (task.visualUrl !== url || task.visualReadySelector !== selector) {
+      task.visualUrl = url;
+      task.visualReadySelector = selector;
+      task.visual = undefined;
+      task.verifiedTree = "";
+      task.checks = [];
+      if (task.stage === "commit") task.stage = "verify";
+      this.record(task, "已更新页面验收地址，需重新验证后提交");
+    }
+    return task;
+  }
+  assertVisual(task: Task) {
+    if (!task.visualRequired) return;
+    const approved = task.prototypes.find(
+      (p) => p.id === task.approvedPrototypeId,
+    );
+    if (
+      !approved ||
+      !task.visual ||
+      task.visual.status !== "passed" ||
+      task.visual.tree !== task.verifiedTree ||
+      task.visual.prototypeId !== approved.id ||
+      task.visual.prototypeHash !==
+        createHash("sha256").update(approved.svg).digest("hex") ||
+      task.visual.url !== task.visualUrl ||
+      task.visual.readySelector !== task.visualReadySelector
+    ) {
+      task.verifiedTree = "";
+      task.stage = "verify";
+      this.store.saveTask(task);
+      throw new Error("UIProof 验收未通过或已过期，请重新运行本地验证");
+    }
+  }
+  async visualReport(id: string) {
+    const task = this.store.task(id);
+    if (!task.visual) throw new Error("尚无 UIProof 报告");
+    return readFile(
+      join(
+        this.store.directory,
+        "visual-reports",
+        `${task.id}-${task.visual.runId}.html`,
+      ),
+      "utf8",
+    );
   }
   saveDocument(id: string, input: Record<string, unknown>) {
     const task = this.idle(id);
@@ -470,6 +528,7 @@ export class Service {
       if (action === "develop") {
         task.verifiedTree = "";
         task.checks = [];
+        task.visual = undefined;
         task.stage = "verify";
       }
       const stage = action === "develop" ? "develop" : task.stage;
@@ -541,6 +600,7 @@ export class Service {
       task.verifiedTree = "";
       task.stage = "verify";
       task.checks = [];
+      task.visual = undefined;
       if (!project.checks.length)
         throw new Error("该项目未配置检查命令，请接入时配置至少一项");
       if ((await this.git(task.workspace, "rev-parse", "HEAD")) !== task.base)
@@ -561,6 +621,59 @@ export class Service {
         }
         this.store.saveTask(task);
       }
+      if (task.visualRequired) {
+        try {
+          const approved = task.prototypes.find(
+            (p) => p.id === task.approvedPrototypeId,
+          );
+          if (!approved) throw new Error("请先确认原型图再进行页面验收");
+          if (!task.visualUrl)
+            throw new Error(
+              "请先填写并保存本地预览地址，在当前任务工作副本启动预览服务",
+            );
+          const result = await this.visualVerifier({
+            url: task.visualUrl,
+            readySelector: task.visualReadySelector,
+            svg: approved.svg,
+            width: Math.round(approved.drawing.width),
+            height: Math.round(approved.drawing.height),
+            taskId: task.id,
+            prototypeId: approved.id,
+            tree: before,
+          });
+          const reports = join(this.store.directory, "visual-reports");
+          await mkdir(reports, { recursive: true });
+          await writeFile(
+            join(reports, `${task.id}-${result.runId}.html`),
+            result.html,
+          );
+          task.visual = {
+            runId: result.runId,
+            status: result.status,
+            summary: result.summary,
+            tree: before,
+            prototypeId: approved.id,
+            prototypeHash: createHash("sha256")
+              .update(approved.svg)
+              .digest("hex"),
+            url: task.visualUrl,
+            readySelector: task.visualReadySelector,
+            checkedAt: new Date().toISOString(),
+          };
+          task.checks.push({
+            name: "UIProof MCP",
+            status: result.status === "passed" ? "passed" : "failed",
+            output: result.summary,
+          });
+        } catch (error) {
+          task.checks.push({
+            name: "UIProof MCP",
+            status: "failed",
+            output: String(error),
+          });
+        }
+        this.store.saveTask(task);
+      }
       if (task.checks.some((c) => c.status === "failed"))
         throw new Error("本地验证未全部通过，请修复后重试");
       if ((await this.snapshot(task.workspace)) !== before)
@@ -569,6 +682,7 @@ export class Service {
       task.stage = "commit";
       this.record(task, "全部检查通过，验证结果已绑定当前代码快照");
     } else if (action === "commit") {
+      this.assertVisual(task);
       if (
         !task.verifiedTree ||
         (await this.snapshot(task.workspace)) !== task.verifiedTree

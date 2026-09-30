@@ -73,7 +73,12 @@ async function fixture(readOnly = false) {
     }
     return run(argv, cwd, options);
   };
-  const service = new Service(store, runner, "fake-codex");
+  const service = new Service(store, runner, "fake-codex", [], async () => ({
+    runId: "00000000-0000-4000-8000-000000000001",
+    status: "passed",
+    summary: "mock UIProof passed",
+    html: "<!doctype html><h1>Fixture report</h1>",
+  }));
   const project = await service.addProject({
     path: repo,
     readOnly,
@@ -105,6 +110,7 @@ async function fixture(readOnly = false) {
     service.approve(task.id, { versionId: prototype.prototypes[0].id });
     await action("generate");
     service.approve(task.id);
+    service.saveVisualInput(task.id, { url: "http://127.0.0.1:3000" });
     const current = store.task(task.id);
     await run(
       ["git", "config", "user.name", "Test Developer"],
@@ -558,6 +564,104 @@ test("reference image validation and prototype busy locking are enforced", async
     const second = new Store(f.store.directory);
     assert.equal(second.task(f.task.id).prototypes.length, 1);
     second.close();
+  } finally {
+    await f.close();
+  }
+});
+
+test("UIProof failure or outage blocks commit; changing visual settings invalidates a pass", async () => {
+  const f = await fixture();
+  try {
+    await f.ready();
+    await f.action("develop");
+    f.service.visualVerifier = async () => ({
+      runId: "00000000-0000-4000-8000-000000000002",
+      status: "failed",
+      summary: "Missing card",
+      html: "<h1>Failed</h1>",
+    });
+    let task = await f.action("verify");
+    assert.equal(task.stage, "verify");
+    assert.equal(task.verifiedTree, "");
+    assert.equal(
+      task.checks.find((c) => c.name === "UIProof MCP")?.status,
+      "failed",
+    );
+    assert.match(await f.service.visualReport(task.id), /Failed/);
+    assert.throws(
+      () => f.service.start(task.id, "commit", { message: "blocked" }),
+      /验证/,
+    );
+    f.service.visualVerifier = async () => {
+      throw new Error("SSH unavailable");
+    };
+    task = await f.action("verify");
+    assert.equal(task.stage, "verify");
+    assert.equal(task.visual, undefined);
+    f.service.visualVerifier = async () => ({
+      runId: "00000000-0000-4000-8000-000000000003",
+      status: "passed",
+      summary: "Passed",
+      html: "<h1>Passed</h1>",
+    });
+    task = await f.action("verify");
+    assert.equal(task.stage, "commit");
+    f.service.saveVisualInput(task.id, { url: "http://127.0.0.1:3001" });
+    task = f.store.task(task.id);
+    assert.equal(task.stage, "verify");
+    assert.equal(task.verifiedTree, "");
+    assert.equal(task.visual, undefined);
+  } finally {
+    await f.close();
+  }
+});
+test("UIProof submission guard binds the approved prototype and code tree", async () => {
+  const f = await fixture();
+  try {
+    await f.ready();
+    await f.action("develop");
+    const task = await f.action("verify");
+    assert.equal(task.stage, "commit");
+    task.visual!.prototypeHash = "tampered";
+    f.store.saveTask(task);
+    const blocked = await f.action("commit", { message: "blocked" });
+    assert.match(blocked.error, /UIProof/);
+    assert.equal(blocked.commit, "");
+  } finally {
+    await f.close();
+  }
+});
+test("UIProof preview address rejects non-local targets and credentials", async () => {
+  const f = await fixture();
+  try {
+    await f.ready();
+    for (const url of [
+      "file:///etc/hosts",
+      "https://example.com",
+      "http://127.0.0.1.evil.test:3000",
+      "http://user:secret@127.0.0.1:3000",
+    ])
+      assert.throws(
+        () => f.service.saveVisualInput(f.task.id, { url }),
+        /预览地址/,
+      );
+  } finally {
+    await f.close();
+  }
+});
+
+test("legacy tasks entering the prototype flow also acquire the UIProof gate", async () => {
+  const f = await fixture();
+  try {
+    const task = f.store.task(f.task.id);
+    const old = JSON.parse(JSON.stringify(task)) as Record<string, unknown>;
+    delete old.visualRequired;
+    delete old.prototypeRequired;
+    f.store.db
+      .prepare("UPDATE records SET body=? WHERE kind=? AND id=?")
+      .run(JSON.stringify(old), "task", task.id);
+    assert.equal(f.store.task(task.id).prototypeRequired, true);
+    assert.equal(f.store.task(task.id).visualRequired, true);
   } finally {
     await f.close();
   }

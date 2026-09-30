@@ -11,9 +11,14 @@ export class Store {
       "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS records (kind TEXT, id TEXT, body TEXT NOT NULL, PRIMARY KEY(kind,id))",
     );
     for (const task of this.tasks())
-      if (task.busy) {
+      if (
+        task.busy ||
+        (task.stage === "commit" &&
+          task.visualRequired &&
+          task.visual?.status !== "passed")
+      ) {
         task.busy = false;
-        task.error = "上次执行因服务停止而中断，请检查记录后重试。";
+        task.error = "验证尚未完成或服务已中断，请重新运行本地验证。";
         task.verifiedTree = "";
         if (task.stage === "commit") task.stage = "verify";
         this.saveTask(task);
@@ -35,6 +40,13 @@ export class Store {
   tasks() {
     return this.list<Task>("task").map((task) => ({
       ...task,
+      visualRequired:
+        task.visualRequired ??
+        (!task.commit &&
+          ((task.prototypeRequired ?? task.stage === "requirements") ||
+            !!task.approvedPrototypeId)),
+      visualUrl: task.visualUrl ?? "",
+      visualReadySelector: task.visualReadySelector ?? "",
       prototypeBrief: task.prototypeBrief ?? "",
       prototypeRevision: task.prototypeRevision ?? 0,
       referenceImage: task.referenceImage ?? "",

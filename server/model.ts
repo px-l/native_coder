@@ -19,6 +19,20 @@ export type Project = {
 };
 export type Event = { at: string; text: string };
 export type Task = {
+  visualRequired: boolean;
+  visualUrl: string;
+  visualReadySelector: string;
+  visual?: {
+    runId: string;
+    status: "passed" | "failed" | "error";
+    summary: string;
+    tree: string;
+    prototypeId: string;
+    prototypeHash: string;
+    url: string;
+    readySelector: string;
+    checkedAt: string;
+  };
   prototypeRequired: boolean;
   prototypeBrief: string;
   prototypeRevision: number;

@@ -1247,3 +1247,34 @@ dialog::backdrop {
   flex-wrap: wrap;
   row-gap: 12px;
 }
+
+.visual-panel {
+  border: 1px solid var(--border, #dce3ed);
+  border-radius: 12px;
+  padding: 20px;
+  margin: 20px 0;
+  background: #f8faff;
+}
+.visual-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.visual-panel .field {
+  margin: 12px 0;
+}
+.visual-panel summary {
+  cursor: pointer;
+}
+.visual-panel pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 280px;
+  overflow: auto;
+}
+.visual-panel small {
+  display: block;
+  margin-top: 10px;
+  color: #64748b;
+}
