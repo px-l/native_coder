@@ -1,3 +1,5 @@
+import { RequirementImage } from "./RequirementImage";
+import { DesignPolicy } from "./DesignPolicy";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Project, Task, Stage } from "../server/model";
@@ -42,6 +44,9 @@ function App() {
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [visualDirty, setVisualDirty] = useState(false);
+  const [designDirty, setDesignDirty] = useState(false);
+  const [requirementImage, setRequirementImage] = useState("");
+  const [imageReading, setImageReading] = useState(false);
   const [health, setHealth] = useState("正在检查 Codex…");
   const [draft, setDraft] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -566,6 +571,14 @@ function App() {
                                     ? "让 Codex 整理初稿，在下方补充澄清答案后确认。"
                                     : "Codex 将结合仓库代码生成方案；确认范围后进入开发。"}
                                 </p>
+                                {task.stage === "requirements" && (
+                                  <DesignPolicy
+                                    task={task}
+                                    disabled={disabled || dirty}
+                                    act={act}
+                                    onDirtyChange={setDesignDirty}
+                                  />
+                                )}
                                 <textarea
                                   className="document-editor"
                                   aria-label="阶段文档"
@@ -584,7 +597,7 @@ function App() {
                                 <div className="action-bar">
                                   <button
                                     className="secondary"
-                                    disabled={disabled || dirty}
+                                    disabled={disabled || dirty || designDirty}
                                     onClick={() => act("generate")}
                                   >
                                     ✧ {draft ? "重新生成" : "Codex 生成初稿"}
@@ -604,7 +617,10 @@ function App() {
                                     <button
                                       className="primary"
                                       disabled={
-                                        disabled || dirty || !draft.trim()
+                                        disabled ||
+                                        dirty ||
+                                        designDirty ||
+                                        !draft.trim()
                                       }
                                       onClick={() => act("approve")}
                                     >
@@ -831,7 +847,14 @@ function App() {
         </main>
       </div>
       {newTask && (
-        <Modal title="新建需求" onClose={() => setNewTask(false)}>
+        <Modal
+          title="新建需求"
+          onClose={() => {
+            if (imageReading || pending) return;
+            setNewTask(false);
+            setRequirementImage("");
+          }}
+        >
           {error && (
             <div className="alert error" role="alert">
               {error}
@@ -847,12 +870,14 @@ function App() {
                   projectId: data.get("projectId"),
                   title: data.get("title"),
                   request: data.get("request"),
+                  requirementImage,
                 });
                 await refresh();
                 setProjectId(result.projectId);
                 setSelected(result.id);
                 setTab("document");
                 setNewTask(false);
+                setRequirementImage("");
                 setView("work");
               } catch (e) {
                 setError(String(e));
@@ -887,11 +912,17 @@ function App() {
                 name="request"
                 rows={6}
                 placeholder="描述使用场景、期望行为与边界情况…"
-                required
+                required={!requirementImage}
                 maxLength={30000}
               />
             </label>
-            <button className="primary full" disabled={pending}>
+            <RequirementImage
+              value={requirementImage}
+              onChange={setRequirementImage}
+              onReading={setImageReading}
+              disabled={pending || imageReading}
+            />
+            <button className="primary full" disabled={pending || imageReading}>
               创建需求
             </button>
           </form>

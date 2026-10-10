@@ -5,6 +5,7 @@ export type VisualRequest = {
   url: string;
   readySelector: string;
   svg: string;
+  imageBase64?: string;
   width: number;
   height: number;
   taskId: string;
@@ -114,21 +115,20 @@ export const verifyUIProof: VisualVerifier = async (input) => {
       prototypeId: input.prototypeId,
       tree: input.tree,
     };
-    const started = z
-      .object({ jobId: z.string().uuid() })
-      .parse(
-        await call("uiproof_verify_image", {
-          baselineBase64: Buffer.from(input.svg).toString("base64"),
-          config: {
-            url: target.href,
-            viewport: { width: input.width, height: input.height },
-            ...(input.readySelector
-              ? { readySelector: input.readySelector }
-              : {}),
-          },
-          context,
-        }),
-      );
+    const started = z.object({ jobId: z.string().uuid() }).parse(
+      await call("uiproof_verify_image", {
+        baselineBase64:
+          input.imageBase64 || Buffer.from(input.svg).toString("base64"),
+        config: {
+          url: target.href,
+          viewport: { width: input.width, height: input.height },
+          ...(input.readySelector
+            ? { readySelector: input.readySelector }
+            : {}),
+        },
+        context,
+      }),
+    );
     const deadline = Date.now() + 180000;
     let runId = "";
     while (Date.now() < deadline) {

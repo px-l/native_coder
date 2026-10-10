@@ -108,7 +108,7 @@ export function createApp(service: Service, webRoot: string) {
             await service.addProject(await body(request), binding[1]),
           );
         const match = path.match(
-          /^\/api\/tasks\/([\w-]+)\/(visual-input|visual-report|prototype-input|prototype|document|approve|generate|develop|verify|commit|push|diff|install)$/,
+          /^\/api\/tasks\/([\w-]+)\/(design-decision|visual-input|visual-report|prototype-input|prototype|document|approve|generate|develop|verify|commit|push|diff|install)$/,
         );
         if (match) {
           if (match[2] === "visual-report" && request.method === "GET")
@@ -119,6 +119,8 @@ export function createApp(service: Service, webRoot: string) {
             return json(response, await service.diff(match[1]));
           if (request.method === "POST") {
             const input = await body(request);
+            if (match[2] === "design-decision")
+              return json(response, service.setDesignDecision(match[1], input));
             if (match[2] === "visual-input")
               return json(response, service.saveVisualInput(match[1], input));
             if (match[2] === "prototype-input")

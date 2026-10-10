@@ -21,7 +21,16 @@ export function VisualPanel({
   }, [task.id, task.visualUrl, task.visualReadySelector]);
   const dirty = url !== task.visualUrl || selector !== task.visualReadySelector;
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
-  if (!task.visualRequired) return null;
+  if (!task.visualRequired)
+    return task.designDecision ? (
+      <section className="visual-panel">
+        <h3>UIProof 原型比较 · 已跳过</h3>
+        <p>{task.designDecision.reason}</p>
+        <p className="muted">
+          仍需通过项目的测试、类型检查、构建等已配置检查。
+        </p>
+      </section>
+    ) : null;
   const approved = task.prototypes.find(
     (p) => p.id === task.approvedPrototypeId,
   );

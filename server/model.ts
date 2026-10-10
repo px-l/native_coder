@@ -19,6 +19,8 @@ export type Project = {
 };
 export type Event = { at: string; text: string };
 export type Task = {
+  designDecision?: import("./design-policy.js").DesignDecision;
+  requirementImage?: string;
   visualRequired: boolean;
   visualUrl: string;
   visualReadySelector: string;
@@ -56,5 +58,9 @@ export type Task = {
   verifiedTree: string;
   commit: string;
   pushed: boolean;
-  checks: { name: string; status: "passed" | "failed"; output: string }[];
+  checks: {
+    name: string;
+    status: "passed" | "failed" | "skipped";
+    output: string;
+  }[];
 };

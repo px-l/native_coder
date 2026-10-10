@@ -17,6 +17,7 @@ export type Drawing = {
   }[];
 };
 export type PrototypeVersion = {
+  image?: string;
   id: string;
   version: number;
   revision: number;

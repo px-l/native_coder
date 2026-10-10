@@ -66,7 +66,16 @@ async function fixture(readOnly = false) {
       await writeFile(
         out,
         argv.includes("--output-schema")
-          ? JSON.stringify(drawing)
+          ? JSON.stringify(
+              argv.some((a) => a.includes("requirements-schema-"))
+                ? {
+                    requirements: "目标：改进文本\n验收：内容更新",
+                    mode: "generate",
+                    complete: true,
+                    reason: "需要完整页面原型",
+                  }
+                : drawing,
+            )
           : "目标：改进文本\n验收：内容更新\n方案：修改 hello.txt",
       );
       return "completed";
@@ -662,6 +671,277 @@ test("legacy tasks entering the prototype flow also acquire the UIProof gate", a
       .run(JSON.stringify(old), "task", task.id);
     assert.equal(f.store.task(task.id).prototypeRequired, true);
     assert.equal(f.store.task(task.id).visualRequired, true);
+  } finally {
+    await f.close();
+  }
+});
+
+async function requestImage() {
+  return `data:image/png;base64,${(await readFile(new URL("./fixtures/requirement.png", import.meta.url))).toString("base64")}`;
+}
+
+test("image-only requests persist, attach the image to analysis, and reuse complete images without generating", async () => {
+  const f = await fixture();
+  try {
+    const image = await requestImage();
+    const task = f.service.createTask({
+      projectId: f.project.id,
+      title: "目标界面",
+      requirementImage: image,
+    });
+    const original = f.service.runner;
+    let images = 0;
+    f.service.runner = async (argv, cwd, options) => {
+      if (argv[0] === "fake-codex") {
+        assert.ok(argv.includes("--image"));
+        assert.equal(
+          (await readFile(argv[argv.indexOf("--image") + 1])).toString(
+            "base64",
+          ),
+          image.split(",")[1],
+        );
+        images++;
+        if (argv.some((a) => a.includes("requirements-schema-"))) {
+          await writeFile(
+            argv[argv.indexOf("--output-last-message") + 1],
+            JSON.stringify({
+              requirements: "复现图片展示",
+              mode: "reuse",
+              complete: true,
+              reason: "图片已完整明确目标效果",
+            }),
+          );
+          return "done";
+        }
+      }
+      return original(argv, cwd, options);
+    };
+    await f.service.start(task.id, "generate").completion;
+    const approved = f.service.approve(task.id);
+    assert.equal(approved.stage, "plan");
+    assert.equal(approved.prototypeRequired, false);
+    assert.equal(approved.visualRequired, true);
+    assert.equal(approved.prototypes[0].image, image);
+    assert.equal(approved.prototypes[0].drawing.width, 320);
+    assert.throws(() => f.service.start(task.id, "prototype"), /先确认需求/);
+    await f.service.start(task.id, "generate").completion;
+    f.service.approve(task.id);
+    await f.service.start(task.id, "develop").completion;
+    assert.equal(images, 3);
+    f.service.saveVisualInput(task.id, { url: "http://127.0.0.1:3000" });
+    f.service.visualVerifier = async (input) => {
+      assert.equal(input.imageBase64, image.split(",")[1]);
+      assert.equal(input.width, 320);
+      return {
+        runId: "image-baseline",
+        status: "failed",
+        summary: "pixel difference",
+        html: "<p>difference</p>",
+      };
+    };
+    await f.service.start(task.id, "verify").completion;
+    assert.equal(f.store.task(task.id).stage, "verify");
+    assert.throws(
+      () => f.service.start(task.id, "commit", { message: "blocked" }),
+      /先通过/,
+    );
+    const reopened = new Store(join(f.root, "state"));
+    assert.equal(reopened.task(task.id).requirementImage, image);
+    assert.equal(reopened.task(task.id).designDecision?.mode, "reuse");
+    reopened.close();
+  } finally {
+    await f.close();
+  }
+});
+
+test("simple and incomplete-image tasks skip only visual comparison; ordinary checks and commit binding remain", async () => {
+  for (const mode of ["simple", "reuse"] as const) {
+    const f = await fixture();
+    try {
+      const task = f.service.createTask({
+        projectId: f.project.id,
+        title: "局部调整",
+        request: "修改文案",
+        requirementImage: await requestImage(),
+      });
+      f.service.saveDocument(task.id, { content: "只修改局部文案" });
+      f.service.setDesignDecision(task.id, {
+        mode,
+        complete: false,
+        reason: mode === "simple" ? "简单文案调整" : "仅局部图，不是完整页面",
+      });
+      assert.equal(f.service.approve(task.id).stage, "plan");
+      await f.service.start(task.id, "generate").completion;
+      f.service.approve(task.id);
+      await f.service.start(task.id, "develop").completion;
+      f.service.visualVerifier = async () => {
+        throw new Error("must not be called");
+      };
+      let taskState = f.store.task(task.id);
+      await writeFile(join(taskState.workspace, "hello.txt"), "bad");
+      await f.service.start(task.id, "verify").completion;
+      assert.equal(f.store.task(task.id).stage, "verify");
+      await writeFile(join(taskState.workspace, "hello.txt"), "generated\n");
+      await f.service.start(task.id, "verify").completion;
+      taskState = f.store.task(task.id);
+      assert.equal(taskState.stage, "commit");
+      assert.equal(
+        taskState.checks.find((c) => c.name === "UIProof MCP")?.status,
+        "skipped",
+      );
+      assert.equal(
+        taskState.checks.find((c) => c.name === "test")?.status,
+        "passed",
+      );
+      assert.throws(
+        () =>
+          f.service.setDesignDecision(task.id, {
+            mode: "simple",
+            complete: false,
+            reason: "late",
+          }),
+        /需求确认前/,
+      );
+      await writeFile(
+        join(taskState.workspace, "hello.txt"),
+        "changed after verify",
+      );
+      await f.service.start(task.id, "commit", { message: "should fail" })
+        .completion;
+      assert.equal(f.store.task(task.id).stage, "verify");
+      assert.equal(await run(["git", "status", "--porcelain"], f.repo), "");
+    } finally {
+      await f.close();
+    }
+  }
+});
+
+test("malformed uploads and reuse without image reject; document edits reset obsolete skip decisions", async () => {
+  const f = await fixture();
+  try {
+    for (const requirementImage of [
+      null,
+      42,
+      "data:image/svg+xml;base64,PHN2Zz4=",
+      "data:image/png;base64,YWJj",
+      "data:image/png;base64," + "A".repeat(5600001),
+    ]) {
+      assert.throws(() =>
+        f.service.createTask({
+          projectId: f.project.id,
+          title: "bad",
+          request: "test",
+          requirementImage,
+        }),
+      );
+    }
+    assert.throws(
+      () =>
+        f.service.setDesignDecision(f.task.id, {
+          mode: "reuse",
+          complete: true,
+          reason: "missing",
+        }),
+      /上传/,
+    );
+    f.service.setDesignDecision(f.task.id, {
+      mode: "simple",
+      complete: true,
+      reason: "small",
+    });
+    assert.equal(f.store.task(f.task.id).visualRequired, false);
+    f.service.saveDocument(f.task.id, { content: "now a complex new page" });
+    assert.equal(f.store.task(f.task.id).visualRequired, true);
+    assert.equal(f.store.task(f.task.id).designDecision, undefined);
+    f.service.runner = async (argv) => {
+      if (argv[0] === "fake-codex") return "no output";
+      throw new Error("analysis unavailable");
+    };
+    await f.action("generate");
+    assert.equal(f.store.task(f.task.id).visualRequired, true);
+  } finally {
+    await f.close();
+  }
+});
+
+test("prototype review can mark a generated partial drawing incomplete with an explicit reason", async () => {
+  const f = await fixture();
+  try {
+    await f.action("generate");
+    f.service.approve(f.task.id);
+    const task = await f.action("prototype");
+    assert.throws(
+      () =>
+        f.service.approve(task.id, {
+          versionId: task.prototypes[0].id,
+          comparisonComplete: false,
+          skipReason: "",
+        }),
+      /原因/,
+    );
+    const approved = f.service.approve(task.id, {
+      versionId: task.prototypes[0].id,
+      comparisonComplete: false,
+      skipReason: "只覆盖局部组件",
+    });
+    assert.equal(approved.stage, "plan");
+    assert.equal(approved.visualRequired, false);
+    assert.equal(approved.designDecision?.reason, "只覆盖局部组件");
+  } finally {
+    await f.close();
+  }
+});
+
+test("structured analysis chooses each policy and invalid analysis never silently bypasses checks", async () => {
+  const f = await fixture();
+  try {
+    const original = f.service.runner;
+    for (const decision of [
+      { mode: "simple", complete: false, reason: "仅修改文字" },
+      { mode: "reuse", complete: false, reason: "上传图只展示局部" },
+      { mode: "generate", complete: true, reason: "需要设计新页面" },
+    ]) {
+      const task = f.service.createTask({
+        projectId: f.project.id,
+        title: "判断策略",
+        requirementImage: await requestImage(),
+      });
+      f.service.runner = async (argv, cwd, options) => {
+        if (argv[0] === "fake-codex") {
+          await writeFile(
+            argv[argv.indexOf("--output-last-message") + 1],
+            JSON.stringify({ requirements: "验收描述", ...decision }),
+          );
+          return "done";
+        }
+        return original(argv, cwd, options);
+      };
+      await f.service.start(task.id, "generate").completion;
+      const result = f.store.task(task.id);
+      assert.equal(result.error, "");
+      assert.equal(result.designDecision?.mode, decision.mode);
+      assert.equal(result.prototypeRequired, decision.mode === "generate");
+      assert.equal(result.visualRequired, decision.complete);
+    }
+    const task = f.service.createTask({
+      projectId: f.project.id,
+      title: "无效判断",
+      request: "新增页面",
+    });
+    f.service.runner = async (argv, cwd, options) => {
+      if (argv[0] === "fake-codex") {
+        await writeFile(
+          argv[argv.indexOf("--output-last-message") + 1],
+          '{"requirements":"text","mode":"simple","complete":false}',
+        );
+        return "done";
+      }
+      return original(argv, cwd, options);
+    };
+    await f.service.start(task.id, "generate").completion;
+    assert.ok(f.store.task(task.id).error);
+    assert.equal(f.store.task(task.id).visualRequired, true);
+    assert.equal(f.store.task(task.id).requirements, "");
   } finally {
     await f.close();
   }

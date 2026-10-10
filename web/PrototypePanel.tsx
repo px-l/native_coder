@@ -16,6 +16,16 @@ export function PrototypePanel({
   const [selected, setSelected] = useState("");
   const [error, setError] = useState("");
   const [reading, setReading] = useState(false);
+  const [comparisonComplete, setComparisonComplete] = useState(
+    task.visualRequired,
+  );
+  const [skipReason, setSkipReason] = useState(
+    task.designDecision?.reason || "",
+  );
+  useEffect(() => {
+    setComparisonComplete(task.visualRequired);
+    setSkipReason(task.designDecision?.reason || "");
+  }, [task.id, task.visualRequired, task.designDecision?.reason]);
   useEffect(() => {
     setBrief(task.prototypeBrief);
     setReference(task.referenceImage);
@@ -30,7 +40,8 @@ export function PrototypePanel({
     brief !== task.prototypeBrief || reference !== task.referenceImage;
   const disabled = pending || task.busy || reading;
   const src = version
-    ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(version.svg)}`
+    ? version.image ||
+      `data:image/svg+xml;charset=utf-8,${encodeURIComponent(version.svg)}`
     : "";
   return (
     <div className="prototype-panel">
@@ -167,13 +178,42 @@ export function PrototypePanel({
                 />
               </div>
               <p className="prototype-summary">{version.drawing.summary}</p>
+              {editable && (
+                <div>
+                  <label className="field">
+                    <span>
+                      <input
+                        type="checkbox"
+                        checked={comparisonComplete}
+                        disabled={disabled}
+                        onChange={(e) =>
+                          setComparisonComplete(e.target.checked)
+                        }
+                      />{" "}
+                      这是完整页面原型，本地验证时进行原型比较
+                    </span>
+                  </label>
+                  {!comparisonComplete && (
+                    <label className="field">
+                      跳过比较原因（仍需通过代码检查）
+                      <textarea
+                        value={skipReason}
+                        maxLength={2000}
+                        disabled={disabled}
+                        onChange={(e) => setSkipReason(e.target.value)}
+                        placeholder="例如：仅设计了局部组件，不能作为整页比较基准"
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
               <div className="action-bar">
                 <a
                   className="secondary"
                   href={src}
-                  download={`prototype-v${version.version}.svg`}
+                  download={`prototype-v${version.version}.${version.image ? (version.image.startsWith("data:image/png") ? "png" : "jpg") : "svg"}`}
                 >
-                  下载 SVG 原型图
+                  下载原型图
                 </a>
                 {editable && (
                   <button
@@ -181,9 +221,16 @@ export function PrototypePanel({
                     disabled={
                       disabled ||
                       dirty ||
-                      version.revision !== task.prototypeRevision
+                      version.revision !== task.prototypeRevision ||
+                      (!comparisonComplete && !skipReason.trim())
                     }
-                    onClick={() => act("approve", { versionId: version.id })}
+                    onClick={() =>
+                      act("approve", {
+                        versionId: version.id,
+                        comparisonComplete,
+                        skipReason,
+                      })
+                    }
                   >
                     确认 v{version.version}，进入技术方案 →
                   </button>
@@ -199,7 +246,9 @@ export function PrototypePanel({
             ? "尚未生成原型图。先生成并确认，再进入技术方案。"
             : task.prototypeRequired
               ? "确认需求后进入原型设计。"
-              : "此任务创建于原型功能上线前，沿用原流程。"}
+              : task.designDecision
+                ? `无需生成原型：${task.designDecision.reason}`
+                : "此任务创建于原型功能上线前，沿用原流程。"}
         </div>
       )}
     </div>
